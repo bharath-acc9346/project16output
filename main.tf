@@ -1,26 +1,36 @@
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
 provider "aws" {
-  region = "us-south-1"
+  region = "ap-south-1"
 }
 
+# Default VPC
 data "aws_vpc" "default" {
   default = true
 }
 
-resource "aws_security_group" "alb_sg" {
-  name = "project16-alb-sg-new"
+# Default Subnets
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# Security Group
+resource "aws_security_group" "web_sg" {
+  name        = "project16-sg"
+  description = "Allow HTTP and SSH"
+  vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    from_port   = 443
-    to_port     = 443
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -33,79 +43,59 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-resource "aws_security_group" "web_sg" {
-  name = "project16-web-sg-new"
-
-  ingress {
-    from_port       = 80
-    to_port         = 80
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb_sg.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
+# EC2 Instance
 resource "aws_instance" "web" {
-  ami                    = "ami-0c101f26f147fa7fd"
+  ami                    = "ami-0f58b397bc5c1f2e8"
   instance_type          = "t2.micro"
   vpc_security_group_ids = [aws_security_group.web_sg.id]
 
   user_data = <<-EOF
-#!/bin/bash
-dnf install -y httpd
-systemctl enable httpd
-systemctl start httpd
-echo "<h1>Project 16 - HTTPS Enabled via ACM</h1>" > /var/www/html/index.html
-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y httpd
+              systemctl start httpd
+              systemctl enable httpd
+              echo "<h1>Project 16 Load Balancer Demo</h1>" > /var/www/html/index.html
+              EOF
 
   tags = {
-    Name = "project16-web"
+    Name = "project16-webserver"
   }
 }
 
+# Application Load Balancer
+resource "aws_lb" "alb" {
+  name               = "project16-alb"
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.web_sg.id]
+  subnets            = data.aws_subnets.default.ids
+}
+
+# Target Group
 resource "aws_lb_target_group" "tg" {
-  name     = "project16-tg-new"
+  name     = "project16-tg"
   port     = 80
   protocol = "HTTP"
   vpc_id   = data.aws_vpc.default.id
 
   health_check {
     path = "/"
+    port = "80"
   }
 }
 
+# Attach EC2 to Target Group
 resource "aws_lb_target_group_attachment" "attach" {
   target_group_arn = aws_lb_target_group.tg.arn
   target_id        = aws_instance.web.id
   port             = 80
 }
 
-resource "aws_lb" "alb" {
-  name               = "project16-alb-new"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb_sg.id]
-
-  subnets = [
-    "subnet-06dbf7f34d036106b",
-    "subnet-0d3d4aa939b46f2b7"
-  ]
-}
-
-resource "aws_lb_listener" "https" {
+# Listener
+resource "aws_lb_listener" "listener" {
   load_balancer_arn = aws_lb.alb.arn
-  port              = 443
-  protocol          = "HTTPS"
-
-  ssl_policy = "ELBSecurityPolicy-2016-08"
-
-  certificate_arn = "arn:aws:acm:us-east-1:590507089733:certificate/96175851-b98e-411b-9242-7f54676bcae0"
+  port              = 80
+  protocol          = "HTTP"
 
   default_action {
     type             = "forward"
